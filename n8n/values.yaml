@@ -10,7 +10,7 @@ db:
     type: postgresdb
 externalPostgresql:
     host: foobar-postgres.domain.com
-    username: fk_n8n
+    username: n8n_user
     password: foobar-n8n-password-xxxxxxxxxxx
     database: n8n
 externalRedis:
