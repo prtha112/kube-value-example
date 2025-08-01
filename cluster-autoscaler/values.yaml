@@ -1,0 +1,22 @@
+cloudProvider: aws
+awsRegion: "ap-southeast-7"
+
+autoDiscovery:
+  clusterName: foobar-cluster 
+
+image:
+  repository: registry.k8s.io/autoscaling/cluster-autoscaler
+  tag: v1.32.0
+  pullPolicy: IfNotPresent
+
+rbac:
+  create: true
+  clusterScoped: true
+  serviceAccount:
+    create: true
+    name: "cluster-autoscaler"
+    automountServiceAccountToken: true
+    annotations: 
+      "eks.amazonaws.com/role-arn": arn:aws:iam::5555555555:role/foobar-cluster-autoscaler-role
+
+replicaCount: 2

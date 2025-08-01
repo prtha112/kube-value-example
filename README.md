@@ -8,9 +8,6 @@ This repository collects example `values.yaml` files and other configuration tem
 - Serve as a reference for DevOps/Developers when deploying new services
 - Share best practices and proven configuration examples
 
-## Repository Structure
-- `n8n/values.yaml`: Example configuration for deploying the n8n workflow automation system on Kubernetes
-
 ## How to Use
 1. Open the desired `values.yaml` file
 2. Copy or adjust the configuration values to fit your environment
