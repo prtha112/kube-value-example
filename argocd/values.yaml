@@ -1,0 +1,263 @@
+argo-cd:
+  crds:
+    install: false
+    keep: false
+
+  global:
+    tolerations:
+      - key: "system"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+    nodeSelector:
+      role: system
+
+  ## Argo Configs
+  configs:
+    # General Argo CD configuration
+    ## Ref: https://github.com/argoproj/argo-cd/blob/master/docs/operator-manual/argocd-cm.yaml
+    cm:
+      # -- Create the argocd-cm configmap for [declarative setup]
+      create: true
+      url: "${ARGO_HOST_URL}"
+      admin.enabled: admin
+      # Dex configuration
+      dex.config: |
+        connectors:
+          - type: github
+            id: github
+            name: GitHub
+            config:
+              clientID: ${CLIENT_ID}
+              clientSecret: ${CLIENT_SECRET}
+              orgs:
+              - name: your-org
+
+    # ConfigMap for Config Management Plugins
+    # Ref: https://argo-cd.readthedocs.io/en/stable/operator-manual/config-management-plugins/
+    cmp:
+      create: true
+      plugins: 
+        sops:
+          init:
+            command: ["sh", "-c"]
+            args: [ 'echo "\n---" >> values-enc.yaml && echo "\n---" >> values.yaml && helm repo add "$ARGOCD_ENV_REPO_NAME" "$ARGOCD_ENV_REPO_URL"' ]
+          generate:
+            command: ["sh", "-c"]
+            args: [ 'helm secrets template --namespace "$ARGOCD_APP_NAMESPACE" -f values.yaml -f values-enc.yaml "$ARGOCD_APP_NAME" "$ARGOCD_ENV_REPO_NAME"/"$ARGOCD_ENV_CHART" --version "$ARGOCD_ENV_CHART_VERSION"' ]
+
+    # Argo CD configuration parameters
+    ## Ref: https://github.com/argoproj/argo-cd/blob/master/docs/operator-manual/argocd-cmd-params-cm.yaml
+    params:
+      create: true
+      server.insecure: true
+
+    # Argo CD RBAC policy configuration
+    ## Ref: https://github.com/argoproj/argo-cd/blob/master/docs/operator-manual/rbac.md
+    rbac:
+      create: true
+      policy.default: 'role:readonly'
+      policy.csv: |
+          p, role:your-team-role-1, applications, *, */*, allow
+          p, role:your-team-role-1, applications, delete, */*, deny
+          p, role:your-team-role-1, repositories, get, *, allow
+          p, role:your-team-role-1, repositories, update, *, allow
+
+          p, role:your-team-role-2, applications, *, */*, allow
+          p, role:your-team-role-2, applications, delete, */*, deny
+          p, role:your-team-role-2, repositories, get, *, allow
+          p, role:your-team-role-2, repositories, update, *, allow
+
+          g, your-org:Team 1, role:your-team-role-1
+          g, your-org:Team 2, role:your-team-role-2
+
+    # -- Repository credentials to be used as Templates for other repos
+    ## Creates a secret for each key/value specified below to create repository credentials
+    credentialTemplates: 
+      creds:
+        url: git@github.com:your-org
+        sshPrivateKey: |
+            ${SSH_PRIVATE_KEY}
+    repositories: 
+      platform-charts:
+        url: git@github.com:your-org/platform-charts.git
+
+    # Argo CD sensitive data
+    # Ref: https://argo-cd.readthedocs.io/en/stable/operator-manual/user-management/#sensitive-data-and-sso-client-secrets
+    secret:
+      createSecret: true
+      githubSecret: ${GITHUB_WEBHOOK_SECRET}
+
+  ## Application controller
+  controller:
+    name: application-controller
+    replicas: 2
+
+  dex:
+    enabled: true
+    name: dex-server
+
+  redis:
+    enabled: true
+
+  redis-ha:
+    enabled: false
+    tolerations:
+      - key: "system"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+
+  ## Server
+  server:
+    # -- Argo CD server name
+    name: server
+    replicas: 2
+
+  ## Repo Server
+  repoServer:
+    # -- Repo server name
+    name: repo-server
+    replicas: 1
+
+    initContainers:
+      - name: custom-tools
+        image: ${IMAGE_REPO}/ubuntu:25.04
+        command: ["/bin/sh", "-c"]
+        env:
+          - name: HELM_VERSION
+            value: "3.18.2"
+          - name: HELM_SECRETS_VERSION
+            value: "4.6.5"
+          - name: KUBECTL_VERSION
+            value: "1.33.1"
+          - name: SOPS_VERSION
+            value: "3.10.2"
+          - name: PLATFORM
+            value: "arm64"
+        args:
+          - |
+            set -e
+            echo "::::::::: Update package and install curl"
+            apt-get -o Acquire::ForceIPv4=true update --yes
+            apt-get install curl unzip --yes
+
+            echo "::::::::: Install SOPS"
+            curl -sSL https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.${PLATFORM} -o sops-v${SOPS_VERSION}.linux.${PLATFORM}
+            mv sops-v${SOPS_VERSION}.linux.${PLATFORM} /custom-tools/sops;
+
+            echo "::::::::: Install Helm"
+            curl -sSL https://get.helm.sh/helm-v${HELM_VERSION}-linux-${PLATFORM}.tar.gz | tar -C ./ -xzf -
+            mv linux-${PLATFORM}/helm /custom-tools/helm;
+            /custom-tools/helm version;
+
+            echo "::::::::: Install Helm Plugings"
+            mkdir -p /custom-tools/helm-plugins
+            curl -sSL https://github.com/jkroepke/helm-secrets/releases/download/v${HELM_SECRETS_VERSION}/helm-secrets.tar.gz | tar -C /custom-tools/helm-plugins -xzf -
+
+            if [ "$PLATFORM" = "amd64" ]; then
+              AWSCLI_PKG="awscli-exe-linux-x86_64.zip"
+            elif [ "$PLATFORM" = "arm64" ]; then
+              AWSCLI_PKG="awscli-exe-linux-aarch64.zip"
+            else
+              echo "Unknown PLATFORM: $PLATFORM" >&2
+              exit 1
+            fi
+
+            echo "::::::::: Install Helm AWSCLI"
+            curl "https://awscli.amazonaws.com/$AWSCLI_PKG" -o "awscliv2.zip"
+            unzip -q awscliv2.zip
+            ./aws/install -b /aws-installation/bin -i /aws-installation/aws-cli --update
+            mkdir -p ./aws-installation/.aws
+            mkdir -p ./aws-installation/.config
+            /aws-installation/bin/aws --version
+
+            mkdir -p /custom-tools/certs
+            mv /etc/ssl/certs/* /custom-tools/certs
+
+            echo "::::::::: CHOWN AND MOD"
+            chown -R 999 /aws-installation/
+            chmod a+x /aws-installation/*
+            chown -R 999 /custom-tools/
+            chmod a+x /custom-tools/*
+        volumeMounts:
+          - mountPath: /custom-tools
+            name: custom-tools
+          - mountPath: /aws-installation
+            name: aws-installation
+    extraContainers:
+      - name: sops
+        command: [/var/run/argocd/argocd-cmp-server] # Entrypoint should be Argo CD lightweight CMP server i.e. argocd-cmp-server
+        image: ${IMAGE_REPO}/ubuntu:25.04 # This can be off-the-shelf or custom-built image
+        env:
+          - name: HELM_PLUGINS
+            value: /usr/local/bin/helm-plugins
+          - name: HELM_SECRETS_VALUES_ALLOW_SYMLINKS
+            value: "false"
+          - name: HELM_SECRETS_VALUES_ALLOW_ABSOLUTE_PATH
+            value: "false"
+          - name: HELM_SECRETS_VALUES_ALLOW_PATH_TRAVERSAL
+            value: "false"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 999
+        volumeMounts:
+          - mountPath: /var/run/argocd
+            name: var-files
+          - mountPath: /home/argocd/cmp-server/plugins
+            name: plugins
+          # Remove this volumeMount if you've chosen to bake the config file into the sidecar image.
+          - mountPath: /home/argocd/cmp-server/config/plugin.yaml
+            name: argocd-cmp-cm
+            subPath: sops.yaml # Key inside cm
+          # Starting with v2.4, do NOT mount the same tmp volume as the repo-server container. The filesystem separation helps
+          # mitigate path traversal attacks.
+          - mountPath: /tmp
+            name: cmp-tmp
+          - mountPath: /.cache
+            name: cache
+          - mountPath: /usr/local/bin/sops
+            name: custom-tools
+            subPath: sops
+          - mountPath: /usr/local/bin/helm
+            name: custom-tools
+            subPath: helm
+          - mountPath: /usr/local/bin/helm-plugins
+            name: custom-tools
+            subPath: helm-plugins
+          - mountPath: /etc/ssl/certs
+            name: custom-tools
+            subPath: certs
+          - mountPath: /aws-installation/bin
+            name: aws-installation
+            subPath: bin
+          - mountPath: /aws-installation/aws-cli
+            name: aws-installation
+            subPath: aws-cli
+          - mountPath: /.aws
+            name: aws-installation
+            subPath: .aws
+          - mountPath: /.config
+            name: aws-installation
+            subPath: .config
+    volumes:
+      - emptyDir: {}
+        name: custom-tools
+      - emptyDir: {}
+        name: aws-installation
+      - emptyDir: {}
+        name: cmp-tmp
+      - emptyDir: {}
+        name: cache
+      - configMap:
+          name: argocd-cmp-cm
+        name: argocd-cmp-cm
+
+    serviceAccount:
+      create: true
+      automountServiceAccountToken: true
+      annotations:
+        "eks.amazonaws.com/role-arn": ${IRSA_ARN}
+
+  notifications:
+    enabled: false
